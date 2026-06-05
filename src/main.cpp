@@ -255,9 +255,28 @@ static ContactInfo FindHammerTipContact(const Vec2& tipPos, float tipRadius, con
     return HammerTipVsWorld(Circle{ tipPos, tipRadius * 0.92f }, world);
 }
 
+static ContactInfo BodyVsWorld(const Vec2& pos, float radius, const std::vector<RectF>& world)
+{
+    ContactInfo best;
+    float bestPen = -1.0f;
+
+    for (const RectF& rect : world)
+    {
+        ContactInfo hit = CircleVsRect(Circle{ pos, radius }, rect);
+
+        if (hit.hit && hit.penetration > bestPen)
+        {
+            best = hit;
+            bestPen = hit.penetration;
+        }
+    }
+
+    return best;
+}
+
 static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
 {
-    constexpr int ITERATIONS = 8;
+    constexpr int ITERATIONS = 14;
 
     for (int i = 0; i < ITERATIONS; ++i)
     {
@@ -301,43 +320,99 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
     }
 }
 
-static void ApplyPinnedLever(
+static void SettlePlayerOnGround(Player& player, const std::vector<RectF>& world)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        ResolveBodyWorld(player, world);
+    }
+
+    player.vel = Vec2(0.0f, 0.0f);
+    player.hammerPinned = false;
+    player.prevHammerTip = player.HammerTip();
+    player.prevHammerAngle = player.hammerAngle;
+    player.prevElbow = player.ElbowWorld();
+}
+
+static bool ApplyPinnedLever(
     Player& player,
     const Vec2& attachPoint,
     const Vec2& mouseWorld,
     const Vec2& prevBodyPos,
     float dt,
-    const std::vector<RectF>& world)
+    const std::vector<RectF>& world,
+    float mouseMoveDistance,
+    bool allowLeverPush)
 {
     player.hammerPinned = true;
     player.pinnedAttachPoint = attachPoint;
-
     player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
-    player.pos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
-    ResolveBodyWorld(player, world);
+
+    Vec2 desiredPos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
+    Vec2 delta = desiredPos - prevBodyPos;
+
+    const float maxStepMove = 28.0f;
+    float deltaLen = Length(delta);
+    if (deltaLen > maxStepMove)
+    {
+        delta = delta * (maxStepMove / deltaLen);
+    }
+
+    float moveT = 1.0f;
+    for (int attempt = 0; attempt < 5; ++attempt)
+    {
+        player.pos = prevBodyPos + delta * moveT;
+        ResolveBodyWorld(player, world);
+
+        ContactInfo bodyHit = BodyVsWorld(player.pos, player.radius, world);
+        if (!bodyHit.hit || bodyHit.penetration <= 1.5f)
+        {
+            break;
+        }
+
+        moveT *= 0.45f;
+    }
+
+    if (moveT < 0.2f)
+    {
+        player.pos = prevBodyPos;
+        ResolveBodyWorld(player, world);
+        player.hammerPinned = false;
+        player.vel = Vec2(0.0f, 0.0f);
+        return false;
+    }
 
     Vec2 constraintVel = (player.pos - prevBodyPos) / dt;
 
-    float angleDelta = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
-    Vec2 shoulder = player.ShoulderWorld();
-    Vec2 leverArm = shoulder - attachPoint;
-    float leverLength = Length(leverArm);
-
-    if (leverLength > 12.0f && std::abs(angleDelta) > 0.0001f)
+    if (allowLeverPush && mouseMoveDistance > 4.0f)
     {
-        Vec2 tangent = Normalize(Vec2(-leverArm.y, leverArm.x));
-        float sign = (angleDelta >= 0.0f) ? 1.0f : -1.0f;
-        Vec2 leverVel = tangent * sign * (std::abs(angleDelta) * leverLength / dt);
-        constraintVel = constraintVel * 0.55f + leverVel * 0.45f;
+        float angleDelta = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
+        Vec2 shoulder = player.ShoulderWorld();
+        Vec2 leverArm = shoulder - attachPoint;
+        float leverLength = Length(leverArm);
+
+        if (leverLength > 12.0f && std::abs(angleDelta) > 0.0002f)
+        {
+            Vec2 tangent = Normalize(Vec2(-leverArm.y, leverArm.x));
+            float sign = (angleDelta >= 0.0f) ? 1.0f : -1.0f;
+            Vec2 leverVel = tangent * sign * (std::abs(angleDelta) * leverLength / dt);
+            constraintVel = constraintVel * 0.82f + leverVel * 0.18f;
+        }
+    }
+    else
+    {
+        constraintVel = constraintVel * 0.25f;
     }
 
     float constraintSpeed = Length(constraintVel);
-    if (constraintSpeed > 1800.0f)
+    const float maxConstraintSpeed = allowLeverPush ? 520.0f : 120.0f;
+    if (constraintSpeed > maxConstraintSpeed)
     {
-        constraintVel = Normalize(constraintVel) * 1800.0f;
+        constraintVel = Normalize(constraintVel) * maxConstraintSpeed;
     }
 
     player.vel = constraintVel;
+    return true;
 }
 
 static void BuildLevel(std::vector<RectF>& world)
@@ -561,16 +636,23 @@ int main(int argc, char* argv[])
     const float airDamping = 0.9992f;
     const float maxSpeed = 1800.0f;
 
-    const float pinBreakSwingSpeed = 920.0f;
+    const float pinBreakSwingSpeed = 900.0f;
+    const float pinEnterSwingSpeed = 380.0f;
+    const float spawnPinCooldown = 0.55f;
     constexpr int MAX_PHYSICS_STEPS = 1;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
+    double spawnCooldownTimer = 0.0;
 
     Vec2 mouseWorld(
         static_cast<float>(WINDOW_WIDTH * 0.5f),
         static_cast<float>(WINDOW_HEIGHT * 0.5f)
     );
+    Vec2 prevMouseWorld = mouseWorld;
+
+    SettlePlayerOnGround(player, world);
+    spawnCooldownTimer = spawnPinCooldown;
 
     while (running)
     {
@@ -606,6 +688,8 @@ int main(int argc, char* argv[])
                 if (event.key.keysym.sym == SDLK_r)
                 {
                     player.Reset();
+                    SettlePlayerOnGround(player, world);
+                    spawnCooldownTimer = spawnPinCooldown;
                 }
             }
         }
@@ -624,13 +708,19 @@ int main(int argc, char* argv[])
             static_cast<float>(mouseY) + camera.y
         );
 
+        float mouseMoveDistance = Length(mouseWorld - prevMouseWorld);
+        bool allowPin = spawnCooldownTimer <= 0.0;
+
         int physicsSteps = 0;
         while (accumulator >= FIXED_DT && physicsSteps < MAX_PHYSICS_STEPS)
         {
+            spawnCooldownTimer = std::max(0.0, spawnCooldownTimer - FIXED_DT);
+
             player.prevHammerAngle = player.hammerAngle;
 
             Vec2 prevBodyPos = player.pos;
             Vec2 prevTip = player.prevHammerTip;
+            bool pinnedThisStep = false;
 
             if (!player.hammerPinned)
             {
@@ -653,6 +743,26 @@ int main(int argc, char* argv[])
             Vec2 relativeTipVelocity = rawTipVelocity - player.vel;
             float swingSpeed = Length(relativeTipVelocity);
 
+            auto tryPin = [&](const Vec2& attachPoint, bool allowLeverPush) -> bool
+            {
+                if (!allowPin)
+                {
+                    return false;
+                }
+
+                pinnedThisStep = ApplyPinnedLever(
+                    player,
+                    attachPoint,
+                    mouseWorld,
+                    prevBodyPos,
+                    FIXED_DT,
+                    world,
+                    mouseMoveDistance,
+                    allowLeverPush
+                );
+                return pinnedThisStep;
+            };
+
             if (player.hammerPinned)
             {
                 ContactInfo pinHit = FindHammerTipContact(
@@ -664,44 +774,34 @@ int main(int argc, char* argv[])
                 if (pinHit.hit && swingSpeed < pinBreakSwingSpeed)
                 {
                     Vec2 attachPoint = TipOnSurface(pinHit, player.hammerTipRadius);
-                    ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
+                    tryPin(attachPoint, mouseMoveDistance > 3.0f);
                 }
                 else
                 {
                     player.hammerPinned = false;
                     player.SolveArmIK(mouseWorld, mouseWorld);
                     player.pos += player.vel * FIXED_DT;
-                    ResolveBodyWorld(player, world);
                 }
             }
-            else if (tipHit.hit && swingSpeed < pinBreakSwingSpeed)
+            else if (tipHit.hit && swingSpeed < pinEnterSwingSpeed && mouseMoveDistance > 2.0f)
             {
                 Vec2 attachPoint = TipOnSurface(tipHit, player.hammerTipRadius);
-                ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
+                tryPin(attachPoint, mouseMoveDistance > 4.0f);
             }
             else
             {
                 player.pos += player.vel * FIXED_DT;
-                ResolveBodyWorld(player, world);
             }
+
+            ResolveBodyWorld(player, world);
 
             if (player.hammerPinned)
             {
                 player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
             }
-            else
+            else if (!pinnedThisStep)
             {
                 player.SolveArmIK(mouseWorld, mouseWorld);
-                ContactInfo postMoveTipHit = FindHammerTipContact(
-                    player.HammerTip(),
-                    player.hammerTipRadius,
-                    world
-                );
-                if (postMoveTipHit.hit && swingSpeed < pinBreakSwingSpeed)
-                {
-                    Vec2 attachPoint = TipOnSurface(postMoveTipHit, player.hammerTipRadius);
-                    ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
-                }
             }
 
             float speed = Length(player.vel);
@@ -719,6 +819,8 @@ int main(int argc, char* argv[])
             accumulator -= FIXED_DT;
             physicsSteps++;
         }
+
+        prevMouseWorld = mouseWorld;
 
         // Rendering
         SDL_SetRenderDrawColor(renderer, 18, 18, 26, 255);
