@@ -5,80 +5,10 @@
 #include <iostream>
 #include "../Player.h"
 
-// ------------------------------------------------------------
-// Boo Hammer Climb Prototype (SDL2)
-// ------------------------------------------------------------
-// Concept
-// - Getting Over It style 2D climbing game
-// - Player moves mainly by rotating a hammer / pickaxe with the mouse
-// - No left-click pushing required
-// - Slow mouse movement creates gentle pushing
-// - Fast mouse movement creates strong physical reaction
-//
-// Technical Features
-// - Fixed timestep physics
-// - Gravity and damping
-// - Circle body physics
-// - Circle vs AABB collision detection
-// - Collision normal based resolution
-// - Hammer tip contact detection
-// - Mouse angular velocity based reaction force
-// - Camera following player
-//
-// Controls
-// - Mouse: rotate hammer around the player
-// - R: reset player
-// - ESC / close button: quit
-// ------------------------------------------------------------
-
 constexpr int WINDOW_WIDTH = 1280;
 constexpr int WINDOW_HEIGHT = 720;
 constexpr float FIXED_DT = 1.0f / 120.0f;
-constexpr int TARGET_FPS = 60;
 constexpr float PI = 3.1415926535f;
-
-static float Dot(const Vec2& a, const Vec2& b)
-{
-    return a.x * b.x + a.y * b.y;
-}
-
-static float Length(const Vec2& v)
-{
-    return std::sqrt(v.x * v.x + v.y * v.y);
-}
-
-static Vec2 Normalize(const Vec2& v)
-{
-    float len = Length(v);
-    if (len <= 0.0001f)
-    {
-        return Vec2(0.0f, 0.0f);
-    }
-
-    return v / len;
-}
-
-static float Clamp(float value, float minValue, float maxValue)
-{
-    return std::max(minValue, std::min(value, maxValue));
-}
-
-static float WrapAngleDiff(float current, float previous)
-{
-    float diff = current - previous;
-
-    while (diff > PI)
-    {
-        diff -= 2.0f * PI;
-    }
-
-    while (diff < -PI)
-    {
-        diff += 2.0f * PI;
-    }
-
-    return diff;
-}
 
 struct Circle
 {
@@ -105,8 +35,30 @@ struct ContactInfo
     bool hit = false;
     Vec2 normal = Vec2(0.0f, -1.0f);
     float penetration = 0.0f;
-    Vec2 point;
+    Vec2 point = Vec2(0.0f, 0.0f);
 };
+
+static float WrapAngleDiff(float current, float previous)
+{
+    float diff = current - previous;
+
+    while (diff > PI)
+    {
+        diff -= 2.0f * PI;
+    }
+
+    while (diff < -PI)
+    {
+        diff += 2.0f * PI;
+    }
+
+    return diff;
+}
+
+static Vec2 DirectionFromAngle(float angle)
+{
+    return Vec2(std::cos(angle), std::sin(angle));
+}
 
 static int ScreenX(float worldX, const Camera& camera)
 {
@@ -123,15 +75,27 @@ static Vec2 WorldToScreen(const Vec2& world, const Camera& camera)
     return Vec2(world.x - camera.x, world.y - camera.y);
 }
 
+static Vec2 PickaxeSharpPoint(const Player& player)
+{
+    Vec2 dir = player.HammerDir();
+    return player.HammerTip() + dir * 12.0f;
+}
+
+static Vec2 PreviousPickaxeSharpPoint(const Player& player)
+{
+    Vec2 previousDir = DirectionFromAngle(player.prevHammerAngle);
+    return player.prevHammerTip + previousDir * 12.0f;
+}
+
 static void DrawCircle(SDL_Renderer* renderer, int cx, int cy, int radius)
 {
-    for (int w = -radius; w <= radius; ++w)
+    for (int x = -radius; x <= radius; ++x)
     {
-        for (int h = -radius; h <= radius; ++h)
+        for (int y = -radius; y <= radius; ++y)
         {
-            if (w * w + h * h <= radius * radius)
+            if (x * x + y * y <= radius * radius)
             {
-                SDL_RenderDrawPoint(renderer, cx + w, cy + h);
+                SDL_RenderDrawPoint(renderer, cx + x, cy + y);
             }
         }
     }
@@ -178,96 +142,123 @@ static ContactInfo CircleVsRect(const Circle& c, const RectF& r)
     Vec2 delta = c.center - closest;
 
     float distSq = Dot(delta, delta);
+    float radiusSq = c.radius * c.radius;
 
-    if (distSq < c.radius * c.radius)
+    if (distSq > 0.0001f && distSq < radiusSq)
     {
-        float dist = std::sqrt(std::max(0.00001f, distSq));
+        float dist = std::sqrt(distSq);
 
         info.hit = true;
         info.point = closest;
+        info.normal = delta / dist;
+        info.penetration = c.radius - dist;
 
-        if (dist > 0.0001f)
+        return info;
+    }
+
+    bool inside =
+        c.center.x >= r.x &&
+        c.center.x <= r.x + r.w &&
+        c.center.y >= r.y &&
+        c.center.y <= r.y + r.h;
+
+    if (inside)
+    {
+        float distLeft = c.center.x - r.x;
+        float distRight = (r.x + r.w) - c.center.x;
+        float distTop = c.center.y - r.y;
+        float distBottom = (r.y + r.h) - c.center.y;
+
+        float minDist = distLeft;
+        info.normal = Vec2(-1.0f, 0.0f);
+
+        if (distRight < minDist)
         {
-            info.normal = delta / dist;
-            info.penetration = c.radius - dist;
+            minDist = distRight;
+            info.normal = Vec2(1.0f, 0.0f);
         }
-        else
+
+        if (distTop < minDist)
         {
-            float leftPen = std::abs(c.center.x - r.x);
-            float rightPen = std::abs((r.x + r.w) - c.center.x);
-            float topPen = std::abs(c.center.y - r.y);
-            float bottomPen = std::abs((r.y + r.h) - c.center.y);
-
-            float minPen = leftPen;
-            info.normal = Vec2(-1.0f, 0.0f);
-
-            if (rightPen < minPen)
-            {
-                minPen = rightPen;
-                info.normal = Vec2(1.0f, 0.0f);
-            }
-
-            if (topPen < minPen)
-            {
-                minPen = topPen;
-                info.normal = Vec2(0.0f, -1.0f);
-            }
-
-            if (bottomPen < minPen)
-            {
-                minPen = bottomPen;
-                info.normal = Vec2(0.0f, 1.0f);
-            }
-
-            info.penetration = c.radius;
+            minDist = distTop;
+            info.normal = Vec2(0.0f, -1.0f);
         }
+
+        if (distBottom < minDist)
+        {
+            minDist = distBottom;
+            info.normal = Vec2(0.0f, 1.0f);
+        }
+
+        info.hit = true;
+        info.point = c.center;
+        info.penetration = minDist + c.radius + 0.5f;
+
+        return info;
     }
 
     return info;
 }
 
-static ContactInfo HammerTipVsWorld(const Circle& tip, const std::vector<RectF>& world)
+static ContactInfo BestCircleWorldContact(const Circle& c, const std::vector<RectF>& world)
 {
     ContactInfo best;
-    float bestPen = -1.0f;
+    float bestPenetration = -1.0f;
 
     for (const RectF& rect : world)
     {
-        ContactInfo hit = CircleVsRect(tip, rect);
+        ContactInfo hit = CircleVsRect(c, rect);
 
-        if (hit.hit && hit.penetration > bestPen)
+        if (hit.hit && hit.penetration > bestPenetration)
         {
             best = hit;
-            bestPen = hit.penetration;
+            bestPenetration = hit.penetration;
         }
     }
 
     return best;
 }
 
-static Vec2 TipOnSurface(const ContactInfo& hit, float tipRadius)
-{
-    return hit.point + hit.normal * (tipRadius - 0.5f);
-}
-
-static ContactInfo FindHammerTipContact(const Vec2& tipPos, float tipRadius, const std::vector<RectF>& world)
-{
-    return HammerTipVsWorld(Circle{ tipPos, tipRadius * 0.92f }, world);
-}
-
-static ContactInfo BodyVsWorld(const Vec2& pos, float radius, const std::vector<RectF>& world)
+static ContactInfo SweptSharpTipContact(
+    const Vec2& previousTip,
+    const Vec2& currentTip,
+    float radius,
+    const std::vector<RectF>& world)
 {
     ContactInfo best;
-    float bestPen = -1.0f;
+    float bestPenetration = -1.0f;
 
-    for (const RectF& rect : world)
+    Vec2 sweep = currentTip - previousTip;
+    float sweepLength = Length(sweep);
+
+    int samples = 1;
+
+    if (sweepLength > 4.0f)
     {
-        ContactInfo hit = CircleVsRect(Circle{ pos, radius }, rect);
+        samples = static_cast<int>(std::ceil(sweepLength / 4.0f));
+    }
 
-        if (hit.hit && hit.penetration > bestPen)
+    if (samples < 1)
+    {
+        samples = 1;
+    }
+
+    if (samples > 48)
+    {
+        samples = 48;
+    }
+
+    for (int i = 0; i <= samples; ++i)
+    {
+        float t = static_cast<float>(i) / static_cast<float>(samples);
+        Vec2 p = previousTip + sweep * t;
+
+        ContactInfo hit = BestCircleWorldContact(Circle{ p, radius }, world);
+
+        if (hit.hit && hit.penetration > bestPenetration)
         {
             best = hit;
-            bestPen = hit.penetration;
+            bestPenetration = hit.penetration;
         }
     }
 
@@ -276,26 +267,24 @@ static ContactInfo BodyVsWorld(const Vec2& pos, float radius, const std::vector<
 
 static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
 {
-    constexpr int ITERATIONS = 14;
+    const int iterations = 16;
 
-    for (int i = 0; i < ITERATIONS; ++i)
+    for (int i = 0; i < iterations; ++i)
     {
         bool anyHit = false;
 
         for (const RectF& rect : world)
         {
-            Circle body{ player.pos, player.radius };
-            ContactInfo hit = CircleVsRect(body, rect);
+            ContactInfo hit = CircleVsRect(Circle{ player.pos, player.radius }, rect);
 
             if (hit.hit)
             {
                 anyHit = true;
 
-                // Push body out of terrain
-                player.pos += hit.normal * hit.penetration;
+                player.pos += hit.normal * (hit.penetration + 0.4f);
 
-                // Remove velocity toward the surface
                 float vn = Dot(player.vel, hit.normal);
+
                 if (vn < 0.0f)
                 {
                     player.vel -= hit.normal * vn;
@@ -303,12 +292,12 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
 
                 if (std::abs(hit.normal.y) > 0.7f)
                 {
-                    player.vel.x *= 0.985f;
+                    player.vel.x *= 0.82f;
                 }
 
                 if (std::abs(hit.normal.x) > 0.7f)
                 {
-                    player.vel.y *= 0.99f;
+                    player.vel.y *= 0.90f;
                 }
             }
         }
@@ -320,243 +309,302 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
     }
 }
 
-static void SettlePlayerOnGround(Player& player, const std::vector<RectF>& world)
+static void MoveBodySafely(Player& player, const std::vector<RectF>& world, float dt)
 {
-    const float floorTop = 700.0f;
-    player.pos.y = floorTop - player.radius - 1.0f;
-    player.vel = Vec2(0.0f, 0.0f);
-    player.hammerPinned = false;
+    Vec2 totalMove = player.vel * dt;
+    float moveLength = Length(totalMove);
 
-    for (int i = 0; i < 8; ++i)
+    int steps = 1;
+
+    if (moveLength > 1.5f)
     {
-        ResolveBodyWorld(player, world);
+        steps = static_cast<int>(std::ceil(moveLength / 1.5f));
     }
 
-    player.vel = Vec2(0.0f, 0.0f);
-    player.hammerPinned = false;
-    player.prevHammerTip = player.HammerTip();
-    player.prevHammerAngle = player.hammerAngle;
-    player.prevElbow = player.ElbowWorld();
+    if (steps < 1)
+    {
+        steps = 1;
+    }
+
+    if (steps > 96)
+    {
+        steps = 96;
+    }
+
+    Vec2 stepMove = totalMove / static_cast<float>(steps);
+
+    for (int i = 0; i < steps; ++i)
+    {
+        Vec2 beforeMove = player.pos;
+
+        player.pos += stepMove;
+        ResolveBodyWorld(player, world);
+
+        ContactInfo bodyHit = BestCircleWorldContact(
+            Circle{ player.pos, player.radius },
+            world
+        );
+
+        if (bodyHit.hit)
+        {
+            float vn = Dot(player.vel, bodyHit.normal);
+
+            if (vn < 0.0f)
+            {
+                player.vel -= bodyHit.normal * vn;
+            }
+
+            ContactInfo stillHit = BestCircleWorldContact(
+                Circle{ player.pos, player.radius },
+                world
+            );
+
+            if (stillHit.hit && stillHit.penetration > player.radius * 0.35f)
+            {
+                player.pos = beforeMove;
+                player.vel = player.vel * 0.25f;
+                ResolveBodyWorld(player, world);
+                break;
+            }
+        }
+    }
+
+    ResolveBodyWorld(player, world);
 }
 
-static bool ApplyPinnedLever(
-    Player& player,
-    const Vec2& attachPoint,
-    const Vec2& mouseWorld,
-    const Vec2& prevBodyPos,
-    float dt,
-    const std::vector<RectF>& world,
-    float mouseMoveDistance)
+static void MoveBodyByCorrection(Player& player, const std::vector<RectF>& world, Vec2 correction)
 {
-    if (mouseMoveDistance < 3.0f)
+    float correctionLength = Length(correction);
+
+    if (correctionLength <= 0.001f)
     {
-        return false;
+        return;
     }
 
-    player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
+    float maxCorrection = 9.0f;
 
-    Vec2 desiredPos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
-    Vec2 delta = desiredPos - prevBodyPos;
-
-    const float maxStepMove = 36.0f;
-    float deltaLen = Length(delta);
-    if (deltaLen > maxStepMove)
+    if (correctionLength > maxCorrection)
     {
-        delta = delta * (maxStepMove / deltaLen);
+        correction = correction * (maxCorrection / correctionLength);
+        correctionLength = maxCorrection;
     }
 
-    if (deltaLen < 0.4f)
+    int steps = static_cast<int>(std::ceil(correctionLength / 1.5f));
+
+    if (steps < 1)
     {
-        return false;
+        steps = 1;
     }
 
-    float moveT = 1.0f;
-    for (int attempt = 0; attempt < 5; ++attempt)
+    if (steps > 12)
     {
-        player.pos = prevBodyPos + delta * moveT;
+        steps = 12;
+    }
+
+    Vec2 stepMove = correction / static_cast<float>(steps);
+
+    for (int i = 0; i < steps; ++i)
+    {
+        Vec2 before = player.pos;
+
+        player.pos += stepMove;
         ResolveBodyWorld(player, world);
 
-        ContactInfo bodyHit = BodyVsWorld(player.pos, player.radius, world);
-        if (!bodyHit.hit || bodyHit.penetration <= 2.0f)
+        ContactInfo bodyHit = BestCircleWorldContact(
+            Circle{ player.pos, player.radius },
+            world
+        );
+
+        if (bodyHit.hit && bodyHit.penetration > player.radius * 0.45f)
         {
+            player.pos = before;
+            player.vel = player.vel * 0.35f;
+            ResolveBodyWorld(player, world);
             break;
         }
-
-        moveT *= 0.5f;
     }
-
-    if (moveT < 0.25f)
-    {
-        player.pos = prevBodyPos;
-        return false;
-    }
-
-    player.hammerPinned = true;
-    player.pinnedAttachPoint = attachPoint;
-
-    Vec2 constraintVel = (player.pos - prevBodyPos) / dt;
-
-    float angleDelta = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
-    Vec2 shoulder = player.ShoulderWorld();
-    Vec2 leverArm = shoulder - attachPoint;
-    float leverLength = Length(leverArm);
-
-    if (leverLength > 12.0f && std::abs(angleDelta) > 0.0002f)
-    {
-        Vec2 tangent = Normalize(Vec2(-leverArm.y, leverArm.x));
-        float sign = (angleDelta >= 0.0f) ? 1.0f : -1.0f;
-        Vec2 leverVel = tangent * sign * (std::abs(angleDelta) * leverLength / dt);
-        constraintVel = constraintVel * 0.7f + leverVel * 0.3f;
-    }
-
-    float constraintSpeed = Length(constraintVel);
-    if (constraintSpeed > 650.0f)
-    {
-        constraintVel = Normalize(constraintVel) * 650.0f;
-    }
-
-    player.vel = constraintVel;
-    return true;
 }
 
 static void BuildLevel(std::vector<RectF>& world)
 {
     world.clear();
 
-    const float thickness = 44.0f;
-    const float stepWidth = 72.0f;
-    const float stepRise = 16.0f;
-    const float overlap = 40.0f;
+    const float T = 34.0f;
 
-    // Left boundary wall
-    world.push_back({ -260.0f, -2200.0f, 44.0f, 5000.0f });
+    world.push_back({ -500.0f, 690.0f, 900.0f, 60.0f });
+    world.push_back({ -540.0f, -300.0f, 40.0f, 1100.0f });
 
-    // Starting flat ground
-    world.push_back({ -240.0f, 700.0f, 420.0f, thickness });
+    world.push_back({ 360.0f, 665.0f, 230.0f, T });
+    world.push_back({ 590.0f, 635.0f, 170.0f, T });
+    world.push_back({ 760.0f, 610.0f, 220.0f, T });
+    world.push_back({ 980.0f, 575.0f, 160.0f, T });
+    world.push_back({ 1140.0f, 545.0f, 240.0f, T });
 
-    // Gentle continuous slope (fine steps read as a smooth incline)
-    float x = 140.0f;
-    float topY = 700.0f;
-    const float slopeStartX = -240.0f;
-    const float slopeStartY = 700.0f;
+    world.push_back({ 500.0f, 620.0f, 26.0f, 45.0f });
+    world.push_back({ 705.0f, 585.0f, 24.0f, 50.0f });
+    world.push_back({ 910.0f, 555.0f, 26.0f, 55.0f });
+    world.push_back({ 1290.0f, 495.0f, 28.0f, 50.0f });
 
-    for (int i = 0; i < 52; ++i)
+    world.push_back({ 1420.0f, 510.0f, 190.0f, T });
+    world.push_back({ 1605.0f, 475.0f, 120.0f, T });
+    world.push_back({ 1725.0f, 430.0f, 210.0f, T });
+    world.push_back({ 1935.0f, 395.0f, 130.0f, T });
+    world.push_back({ 2070.0f, 350.0f, 230.0f, T });
+
+    world.push_back({ 1515.0f, 450.0f, 28.0f, 60.0f });
+    world.push_back({ 1830.0f, 365.0f, 28.0f, 65.0f });
+    world.push_back({ 2180.0f, 285.0f, 28.0f, 65.0f });
+
+    world.push_back({ 2360.0f, 315.0f, 180.0f, T });
+    world.push_back({ 2520.0f, 285.0f, 80.0f, 80.0f });
+    world.push_back({ 2620.0f, 255.0f, 210.0f, T });
+
+    world.push_back({ 2870.0f, 220.0f, 160.0f, T });
+    world.push_back({ 3025.0f, 175.0f, 90.0f, 90.0f });
+    world.push_back({ 3150.0f, 155.0f, 220.0f, T });
+
+    world.push_back({ 3440.0f, 120.0f, 260.0f, T });
+    world.push_back({ 3710.0f, 80.0f, 180.0f, T });
+    world.push_back({ 3890.0f, 40.0f, 380.0f, 46.0f });
+
+    world.push_back({ 4070.0f, -50.0f, 30.0f, 90.0f });
+
+    world.push_back({ 650.0f, 560.0f, 70.0f, 24.0f });
+    world.push_back({ 1040.0f, 505.0f, 75.0f, 24.0f });
+    world.push_back({ 1690.0f, 390.0f, 70.0f, 24.0f });
+    world.push_back({ 2430.0f, 250.0f, 70.0f, 24.0f });
+    world.push_back({ 2950.0f, 140.0f, 70.0f, 24.0f });
+    world.push_back({ 3550.0f, 45.0f, 80.0f, 24.0f });
+}
+
+static void UpdateHammerAngle(Player& player, const Vec2& mouseWorld)
+{
+    Vec2 toMouse = mouseWorld - player.pos;
+
+    if (Length(toMouse) > 0.001f)
     {
-        world.push_back({ x, topY, stepWidth + overlap, thickness });
-        x += stepWidth;
-        topY -= stepRise;
+        player.targetHammerAngle = std::atan2(toMouse.y, toMouse.x);
     }
 
-    const float slopeEndX = x;
-    const float slopeEndY = topY;
+    float diff = WrapAngleDiff(player.targetHammerAngle, player.hammerAngle);
 
-    // Solid fill under the slope only (keeps spawn area clear)
-    const float fillTop = slopeStartY + thickness + 4.0f;
-    world.push_back({
-        200.0f,
-        slopeEndY - 40.0f,
-        (slopeEndX - 200.0f) + 80.0f,
-        fillTop - (slopeEndY - 40.0f)
-    });
+    const float stiffness = 250.0f;
+    const float damping = 0.84f;
+    const float maxAngularVelocity = 48.0f;
 
-    // Goal plateau
-    world.push_back({ slopeEndX - 60.0f, slopeEndY, 320.0f, thickness + 6.0f });
+    player.hammerAngularVelocity += diff * stiffness * FIXED_DT;
+    player.hammerAngularVelocity *= damping;
 
-    // Scattered obstacles on the slope (not removing terrain, adding challenge)
-    world.push_back({ 520.0f, 590.0f, 36.0f, 110.0f });
-    world.push_back({ 1180.0f, 410.0f, 140.0f, 28.0f });
-    world.push_back({ 1680.0f, 250.0f, 36.0f, 130.0f });
-    world.push_back({ 2280.0f, 90.0f, 100.0f, 28.0f });
-    world.push_back({ 2860.0f, -70.0f, 36.0f, 150.0f });
-
-    // Side hook rocks
-    world.push_back({ 2100.0f, 60.0f, 32.0f, 160.0f });
-    world.push_back({ 3400.0f, -120.0f, 32.0f, 140.0f });
-
-    // Wide thick bottom floor
-    world.push_back({ -900.0f, 1700.0f, 5600.0f, 900.0f });
-}
-
-static void DrawArmSegment(SDL_Renderer* renderer, const Vec2& a, const Vec2& b, const Camera& camera)
-{
-    Vec2 aScreen = WorldToScreen(a, camera);
-    Vec2 bScreen = WorldToScreen(b, camera);
-
-    SDL_RenderDrawLine(
-        renderer,
-        static_cast<int>(aScreen.x),
-        static_cast<int>(aScreen.y),
-        static_cast<int>(bScreen.x),
-        static_cast<int>(bScreen.y)
+    player.hammerAngularVelocity = Clamp(
+        player.hammerAngularVelocity,
+        -maxAngularVelocity,
+        maxAngularVelocity
     );
+
+    player.hammerAngle += player.hammerAngularVelocity * FIXED_DT;
+
+    float remainingDiff = WrapAngleDiff(player.targetHammerAngle, player.hammerAngle);
+    player.hammerAngle += remainingDiff * 0.22f;
 }
 
-static void GetArmPose(
-    const Player& player,
-    const Vec2& mouseWorld,
-    Vec2& shoulder,
-    Vec2& elbow,
-    Vec2& tip,
-    Vec2& dir)
+static void ApplyHammerPhysics(Player& player, const std::vector<RectF>& world)
 {
-    if (player.hammerPinned)
-    {
-        tip = player.pinnedAttachPoint;
-        Vec2 shaft = mouseWorld - tip;
-        if (Length(shaft) > 0.001f)
-        {
-            shaft = Normalize(shaft);
-        }
-        else
-        {
-            shaft = player.HammerDir();
-        }
+    Vec2 sharpTip = PickaxeSharpPoint(player);
+    Vec2 previousSharpTip = PreviousPickaxeSharpPoint(player);
 
-        elbow = tip + shaft * player.forearmLength;
-        dir = Normalize(tip - elbow);
-        shoulder = player.ShoulderWorld();
+    Vec2 tipVelocity = (sharpTip - previousSharpTip) / FIXED_DT;
+    Vec2 relativeTipVelocity = tipVelocity - player.vel;
+
+    ContactInfo hit = SweptSharpTipContact(
+        previousSharpTip,
+        sharpTip,
+        player.hammerTipRadius,
+        world
+    );
+
+    if (!hit.hit)
+    {
         return;
     }
 
-    shoulder = player.ShoulderWorld();
-    elbow = player.ElbowWorld();
-    tip = player.HammerTip();
-    dir = player.HammerDir();
+    float intoSurfaceSpeed = Dot(relativeTipVelocity, hit.normal * -1.0f);
+
+    Vec2 oppositeSwing = Normalize(relativeTipVelocity * -1.0f);
+    Vec2 reactionDir = hit.normal;
+
+    if (Length(oppositeSwing) > 0.001f)
+    {
+        reactionDir = Normalize(hit.normal * 0.72f + oppositeSwing * 0.28f);
+    }
+
+    if (intoSurfaceSpeed < 0.0f)
+    {
+        intoSurfaceSpeed = 0.0f;
+    }
+
+    intoSurfaceSpeed = Clamp(intoSurfaceSpeed, 0.0f, 1200.0f);
+
+    float correctionStrength = 0.85f;
+    float correctionAmount = Clamp(hit.penetration + intoSurfaceSpeed * 0.004f, 0.0f, 10.0f);
+    Vec2 correction = reactionDir * correctionAmount * correctionStrength;
+
+    MoveBodyByCorrection(player, world, correction);
+
+    float force = 900.0f + intoSurfaceSpeed * 4.6f;
+    force = Clamp(force, 0.0f, 5600.0f);
+
+    player.vel += reactionDir * force * FIXED_DT;
+
+    float speed = Length(player.vel);
+
+    if (speed > 1450.0f)
+    {
+        player.vel = Normalize(player.vel) * 1450.0f;
+    }
 }
 
-static void DrawPickaxe(SDL_Renderer* renderer, const Player& player, const Camera& camera, const Vec2& mouseWorld, bool contact)
+static void DrawPickaxe(SDL_Renderer* renderer, const Player& player, const Camera& camera, bool contact)
 {
-    Vec2 shoulder;
-    Vec2 elbow;
-    Vec2 tip;
-    Vec2 dir;
-    GetArmPose(player, mouseWorld, shoulder, elbow, tip, dir);
+    Vec2 bodyWorld = player.pos;
+    Vec2 tipWorld = player.HammerTip();
 
-    Vec2 shoulderScreen = WorldToScreen(shoulder, camera);
-    Vec2 elbowScreen = WorldToScreen(elbow, camera);
-    Vec2 tipScreen = WorldToScreen(tip, camera);
+    Vec2 body = WorldToScreen(bodyWorld, camera);
+    Vec2 tip = WorldToScreen(tipWorld, camera);
 
-    SDL_SetRenderDrawColor(renderer, 200, 175, 140, 255);
-    DrawArmSegment(renderer, shoulder, elbow, camera);
-
-    SDL_SetRenderDrawColor(renderer, 220, 220, 225, 255);
-    DrawArmSegment(renderer, elbow, tip, camera);
-
-    SDL_SetRenderDrawColor(renderer, 180, 150, 110, 255);
-    DrawCircleOutline(renderer, static_cast<int>(elbowScreen.x), static_cast<int>(elbowScreen.y), 5);
-
+    Vec2 dir = player.HammerDir();
     Vec2 normal(-dir.y, dir.x);
-    Vec2 headCenter = tip - dir * 18.0f;
-    Vec2 leftHead = headCenter + normal * 28.0f;
-    Vec2 rightHead = headCenter - normal * 28.0f;
 
-    Vec2 leftScreen = WorldToScreen(leftHead, camera);
-    Vec2 rightScreen = WorldToScreen(rightHead, camera);
-    Vec2 headScreen = WorldToScreen(headCenter, camera);
+    SDL_SetRenderDrawColor(renderer, 210, 210, 215, 255);
+
+    SDL_RenderDrawLine(
+        renderer,
+        static_cast<int>(body.x),
+        static_cast<int>(body.y),
+        static_cast<int>(tip.x),
+        static_cast<int>(tip.y)
+    );
+
+    SDL_RenderDrawLine(
+        renderer,
+        static_cast<int>(body.x + 1),
+        static_cast<int>(body.y),
+        static_cast<int>(tip.x + 1),
+        static_cast<int>(tip.y)
+    );
+
+    Vec2 headCenterWorld = tipWorld - dir * 14.0f;
+    Vec2 sharpPointWorld = tipWorld + dir * 12.0f;
+    Vec2 backPointWorld = headCenterWorld - dir * 6.0f - normal * 34.0f;
+    Vec2 upperHookWorld = headCenterWorld - dir * 4.0f + normal * 34.0f;
+
+    Vec2 headCenter = WorldToScreen(headCenterWorld, camera);
+    Vec2 sharpPoint = WorldToScreen(sharpPointWorld, camera);
+    Vec2 backPoint = WorldToScreen(backPointWorld, camera);
+    Vec2 upperHook = WorldToScreen(upperHookWorld, camera);
 
     if (contact)
     {
-        SDL_SetRenderDrawColor(renderer, 255, 90, 90, 255);
+        SDL_SetRenderDrawColor(renderer, 255, 70, 70, 255);
     }
     else
     {
@@ -565,26 +613,31 @@ static void DrawPickaxe(SDL_Renderer* renderer, const Player& player, const Came
 
     SDL_RenderDrawLine(
         renderer,
-        static_cast<int>(leftScreen.x),
-        static_cast<int>(leftScreen.y),
-        static_cast<int>(rightScreen.x),
-        static_cast<int>(rightScreen.y)
+        static_cast<int>(backPoint.x),
+        static_cast<int>(backPoint.y),
+        static_cast<int>(sharpPoint.x),
+        static_cast<int>(sharpPoint.y)
     );
 
     SDL_RenderDrawLine(
         renderer,
-        static_cast<int>(headScreen.x),
-        static_cast<int>(headScreen.y),
-        static_cast<int>(tipScreen.x),
-        static_cast<int>(tipScreen.y)
+        static_cast<int>(upperHook.x),
+        static_cast<int>(upperHook.y),
+        static_cast<int>(sharpPoint.x),
+        static_cast<int>(sharpPoint.y)
     );
 
-    DrawCircleOutline(
+    SDL_RenderDrawLine(
         renderer,
-        static_cast<int>(tipScreen.x),
-        static_cast<int>(tipScreen.y),
-        static_cast<int>(player.hammerTipRadius)
+        static_cast<int>(headCenter.x),
+        static_cast<int>(headCenter.y),
+        static_cast<int>(sharpPoint.x),
+        static_cast<int>(sharpPoint.y)
     );
+
+    SDL_RenderDrawPoint(renderer, static_cast<int>(sharpPoint.x), static_cast<int>(sharpPoint.y));
+    SDL_RenderDrawPoint(renderer, static_cast<int>(sharpPoint.x + 1), static_cast<int>(sharpPoint.y));
+    SDL_RenderDrawPoint(renderer, static_cast<int>(sharpPoint.x), static_cast<int>(sharpPoint.y + 1));
 }
 
 int main(int argc, char* argv[])
@@ -631,30 +684,22 @@ int main(int argc, char* argv[])
     bool running = true;
 
     Player player;
-
     std::vector<RectF> world;
     BuildLevel(world);
 
     Camera camera{ 0.0f, 0.0f };
 
-    const float gravity = 3200.0f;
-    const float airDamping = 0.9992f;
-    const float maxSpeed = 1800.0f;
-
-    const float pinEnterSwingSpeed = 420.0f;
-    constexpr int MAX_PHYSICS_STEPS = 2;
+    const float gravity = 2350.0f;
+    const float airDamping = 0.999f;
+    const float maxSpeed = 1450.0f;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
-    Vec2 mouseWorld(0.0f, 0.0f);
-    Vec2 prevMouseWorld(0.0f, 0.0f);
-    bool mouseWorldInitialized = false;
-
-    SettlePlayerOnGround(player, world);
 
     while (running)
     {
         Uint64 currentCounter = SDL_GetPerformanceCounter();
+
         double deltaSeconds =
             static_cast<double>(currentCounter - previousCounter) /
             static_cast<double>(SDL_GetPerformanceFrequency());
@@ -669,6 +714,7 @@ int main(int argc, char* argv[])
         accumulator += deltaSeconds;
 
         SDL_Event event;
+
         while (SDL_PollEvent(&event))
         {
             if (event.type == SDL_QUIT)
@@ -686,114 +732,58 @@ int main(int argc, char* argv[])
                 if (event.key.keysym.sym == SDLK_r)
                 {
                     player.Reset();
-                    SettlePlayerOnGround(player, world);
                 }
             }
         }
 
-        // Camera follows the player. It is updated before mouse-world conversion
-        // so that mouse direction matches the current camera view.
-        camera.x = player.pos.x - WINDOW_WIDTH * 0.42f;
+        camera.x = player.pos.x - WINDOW_WIDTH * 0.35f;
         camera.y = player.pos.y - WINDOW_HEIGHT * 0.58f;
 
         int mouseX = 0;
         int mouseY = 0;
         SDL_GetMouseState(&mouseX, &mouseY);
 
-        mouseWorld = Vec2(
+        Vec2 mouseWorld(
             static_cast<float>(mouseX) + camera.x,
             static_cast<float>(mouseY) + camera.y
         );
 
-        if (!mouseWorldInitialized)
-        {
-            prevMouseWorld = mouseWorld;
-            mouseWorldInitialized = true;
-        }
-
-        float mouseMoveDistance = Length(mouseWorld - prevMouseWorld);
-
-        int physicsSteps = 0;
-        while (accumulator >= FIXED_DT && physicsSteps < MAX_PHYSICS_STEPS)
+        while (accumulator >= FIXED_DT)
         {
             player.prevHammerAngle = player.hammerAngle;
-            player.hammerPinned = false;
+            player.prevHammerTip = player.HammerTip();
 
-            Vec2 prevBodyPos = player.pos;
-            Vec2 prevTip = player.prevHammerTip;
+            UpdateHammerAngle(player, mouseWorld);
+            ApplyHammerPhysics(player, world);
 
             player.vel.y += gravity * FIXED_DT;
             player.vel = player.vel * airDamping;
-            player.SolveArmIK(mouseWorld, mouseWorld);
-
-            Vec2 currentTip = player.HammerTip();
-            ContactInfo tipHit = FindHammerTipContact(currentTip, player.hammerTipRadius, world);
-            ContactInfo sweptHit = FindHammerTipContact(prevTip, player.hammerTipRadius, world);
-
-            if (!tipHit.hit && sweptHit.hit)
-            {
-                tipHit = sweptHit;
-            }
-
-            Vec2 rawTipVelocity = (currentTip - prevTip) / FIXED_DT;
-            float swingSpeed = Length(rawTipVelocity - player.vel);
-
-            bool pinApplied = false;
-            if (tipHit.hit && swingSpeed < pinEnterSwingSpeed && mouseMoveDistance > 3.0f)
-            {
-                Vec2 attachPoint = TipOnSurface(tipHit, player.hammerTipRadius);
-                pinApplied = ApplyPinnedLever(
-                    player,
-                    attachPoint,
-                    mouseWorld,
-                    prevBodyPos,
-                    FIXED_DT,
-                    world,
-                    mouseMoveDistance
-                );
-            }
-
-            if (!pinApplied)
-            {
-                player.pos += player.vel * FIXED_DT;
-            }
-
-            ResolveBodyWorld(player, world);
-
-            if (player.hammerPinned)
-            {
-                player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
-            }
-            else
-            {
-                player.SolveArmIK(mouseWorld, mouseWorld);
-            }
 
             float speed = Length(player.vel);
+
             if (speed > maxSpeed)
             {
                 player.vel = Normalize(player.vel) * maxSpeed;
             }
 
-            float angleDiff = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
-            player.hammerAngularVelocity = angleDiff / FIXED_DT;
+            MoveBodySafely(player, world, FIXED_DT);
 
-            player.prevHammerTip = player.hammerPinned ? player.pinnedAttachPoint : player.HammerTip();
-            player.prevElbow = player.ElbowWorld();
+            player.currentHammerTip = player.HammerTip();
+
+            if (player.pos.y > 1200.0f)
+            {
+                player.Reset();
+            }
 
             accumulator -= FIXED_DT;
-            physicsSteps++;
         }
 
-        prevMouseWorld = mouseWorld;
-
-        // Rendering
         SDL_SetRenderDrawColor(renderer, 18, 18, 26, 255);
         SDL_RenderClear(renderer);
 
-        // Draw background guide lines
         SDL_SetRenderDrawColor(renderer, 35, 35, 48, 255);
-        for (int y = -1200; y <= 800; y += 120)
+
+        for (int y = -100; y <= 900; y += 120)
         {
             SDL_RenderDrawLine(
                 renderer,
@@ -804,30 +794,39 @@ int main(int argc, char* argv[])
             );
         }
 
-        // Draw level
         SDL_SetRenderDrawColor(renderer, 110, 110, 130, 255);
+
         for (const RectF& rect : world)
         {
             DrawWorldRect(renderer, rect, camera);
         }
 
-        // Draw goal marker at climb summit
         SDL_SetRenderDrawColor(renderer, 255, 220, 80, 255);
+
         SDL_Rect goalRect{
-            ScreenX(3580.0f, camera),
-            ScreenY(-150.0f, camera),
-            100,
-            45
+            ScreenX(4040.0f, camera),
+            ScreenY(-90.0f, camera),
+            140,
+            50
         };
+
         SDL_RenderFillRect(renderer, &goalRect);
 
-        // Draw pickaxe / hammer (single pose synced to mouse when pinned)
-        DrawPickaxe(renderer, player, camera, mouseWorld, player.hammerPinned);
+        Vec2 hammerTip = PickaxeSharpPoint(player);
 
-        // Draw player body. This will later be replaced by Boo sprite.
+        ContactInfo tipHit = SweptSharpTipContact(
+            PreviousPickaxeSharpPoint(player),
+            hammerTip,
+            player.hammerTipRadius,
+            world
+        );
+
+        DrawPickaxe(renderer, player, camera, tipHit.hit);
+
         Vec2 playerScreen = WorldToScreen(player.pos, camera);
 
-        SDL_SetRenderDrawColor(renderer, 214, 161, 90, 255);
+        SDL_SetRenderDrawColor(renderer, 174, 218, 238, 255);
+
         DrawCircle(
             renderer,
             static_cast<int>(playerScreen.x),
@@ -835,7 +834,8 @@ int main(int argc, char* argv[])
             static_cast<int>(player.radius)
         );
 
-        SDL_SetRenderDrawColor(renderer, 60, 35, 18, 255);
+        SDL_SetRenderDrawColor(renderer, 20, 45, 75, 255);
+
         DrawCircleOutline(
             renderer,
             static_cast<int>(playerScreen.x),
@@ -843,27 +843,39 @@ int main(int argc, char* argv[])
             static_cast<int>(player.radius)
         );
 
-        // Draw simple face
         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
-        DrawCircle(renderer, static_cast<int>(playerScreen.x - 8), static_cast<int>(playerScreen.y - 6), 3);
-        DrawCircle(renderer, static_cast<int>(playerScreen.x + 8), static_cast<int>(playerScreen.y - 6), 3);
-        SDL_RenderDrawLine(
+
+        DrawCircle(
             renderer,
             static_cast<int>(playerScreen.x - 8),
-            static_cast<int>(playerScreen.y + 8),
-            static_cast<int>(playerScreen.x + 8),
-            static_cast<int>(playerScreen.y + 8)
+            static_cast<int>(playerScreen.y - 7),
+            3
         );
 
-        // Draw spawn marker
-        SDL_SetRenderDrawColor(renderer, 80, 220, 120, 255);
-        SDL_Rect spawnRect{
-            ScreenX(player.spawnPos.x - 8.0f, camera),
-            ScreenY(player.spawnPos.y - 8.0f, camera),
-            16,
-            16
-        };
-        SDL_RenderFillRect(renderer, &spawnRect);
+        DrawCircle(
+            renderer,
+            static_cast<int>(playerScreen.x + 8),
+            static_cast<int>(playerScreen.y - 7),
+            3
+        );
+
+        SDL_SetRenderDrawColor(renderer, 255, 150, 20, 255);
+
+        SDL_RenderDrawLine(
+            renderer,
+            static_cast<int>(playerScreen.x),
+            static_cast<int>(playerScreen.y - 2),
+            static_cast<int>(playerScreen.x - 5),
+            static_cast<int>(playerScreen.y + 5)
+        );
+
+        SDL_RenderDrawLine(
+            renderer,
+            static_cast<int>(playerScreen.x),
+            static_cast<int>(playerScreen.y - 2),
+            static_cast<int>(playerScreen.x + 5),
+            static_cast<int>(playerScreen.y + 5)
+        );
 
         SDL_RenderPresent(renderer);
     }

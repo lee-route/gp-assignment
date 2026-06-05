@@ -125,13 +125,13 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\include;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\Potgame\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\include;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\Potgame\include;C:\Users\wngud\Downloads\SDL2-devel-2.32.10-VC\SDL2-2.32.10\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>SDL2.lib;SDL2main.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\SDL2\lib\x64;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\SDL2\lib\x64;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\lib\x64;C:\Users\wngud\Downloads\SDL2-devel-2.32.10-VC\SDL2-2.32.10\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
@@ -146,13 +146,13 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\include;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\Potgame\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\include;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\Potgame\include;C:\Users\wngud\Downloads\SDL2-devel-2.32.10-VC\SDL2-2.32.10\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>SDL2.lib;SDL2main.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\SDL2\lib\x64;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\SDL2\lib\x64;C:\Users\gsulm\OneDrive\문서\대학\4학년 1학기\게임프로그래밍\SDL2-devel-2.30.11-VC\SDL2-2.30.11\lib\x64;C:\Users\wngud\Downloads\SDL2-devel-2.32.10-VC\SDL2-2.32.10\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
