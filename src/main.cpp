@@ -322,7 +322,12 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
 
 static void SettlePlayerOnGround(Player& player, const std::vector<RectF>& world)
 {
-    for (int i = 0; i < 6; ++i)
+    const float floorTop = 700.0f;
+    player.pos.y = floorTop - player.radius - 1.0f;
+    player.vel = Vec2(0.0f, 0.0f);
+    player.hammerPinned = false;
+
+    for (int i = 0; i < 8; ++i)
     {
         ResolveBodyWorld(player, world);
     }
@@ -638,18 +643,16 @@ int main(int argc, char* argv[])
 
     const float pinBreakSwingSpeed = 900.0f;
     const float pinEnterSwingSpeed = 380.0f;
-    const float spawnPinCooldown = 0.55f;
+    const float spawnPinCooldown = 0.2f;
     constexpr int MAX_PHYSICS_STEPS = 1;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
     double spawnCooldownTimer = 0.0;
 
-    Vec2 mouseWorld(
-        static_cast<float>(WINDOW_WIDTH * 0.5f),
-        static_cast<float>(WINDOW_HEIGHT * 0.5f)
-    );
-    Vec2 prevMouseWorld = mouseWorld;
+    Vec2 mouseWorld(0.0f, 0.0f);
+    Vec2 prevMouseWorld(0.0f, 0.0f);
+    bool mouseWorldInitialized = false;
 
     SettlePlayerOnGround(player, world);
     spawnCooldownTimer = spawnPinCooldown;
@@ -708,6 +711,12 @@ int main(int argc, char* argv[])
             static_cast<float>(mouseY) + camera.y
         );
 
+        if (!mouseWorldInitialized)
+        {
+            prevMouseWorld = mouseWorld;
+            mouseWorldInitialized = true;
+        }
+
         float mouseMoveDistance = Length(mouseWorld - prevMouseWorld);
         bool allowPin = spawnCooldownTimer <= 0.0;
 
@@ -715,12 +724,18 @@ int main(int argc, char* argv[])
         while (accumulator >= FIXED_DT && physicsSteps < MAX_PHYSICS_STEPS)
         {
             spawnCooldownTimer = std::max(0.0, spawnCooldownTimer - FIXED_DT);
+            allowPin = spawnCooldownTimer <= 0.0;
+
+            if (!allowPin)
+            {
+                player.hammerPinned = false;
+            }
 
             player.prevHammerAngle = player.hammerAngle;
 
             Vec2 prevBodyPos = player.pos;
             Vec2 prevTip = player.prevHammerTip;
-            bool pinnedThisStep = false;
+            bool pinApplied = false;
 
             if (!player.hammerPinned)
             {
@@ -750,7 +765,7 @@ int main(int argc, char* argv[])
                     return false;
                 }
 
-                pinnedThisStep = ApplyPinnedLever(
+                return ApplyPinnedLever(
                     player,
                     attachPoint,
                     mouseWorld,
@@ -760,7 +775,6 @@ int main(int argc, char* argv[])
                     mouseMoveDistance,
                     allowLeverPush
                 );
-                return pinnedThisStep;
             };
 
             if (player.hammerPinned)
@@ -774,22 +788,22 @@ int main(int argc, char* argv[])
                 if (pinHit.hit && swingSpeed < pinBreakSwingSpeed)
                 {
                     Vec2 attachPoint = TipOnSurface(pinHit, player.hammerTipRadius);
-                    tryPin(attachPoint, mouseMoveDistance > 3.0f);
-                }
-                else
-                {
-                    player.hammerPinned = false;
-                    player.SolveArmIK(mouseWorld, mouseWorld);
-                    player.pos += player.vel * FIXED_DT;
+                    pinApplied = tryPin(attachPoint, mouseMoveDistance > 3.0f);
                 }
             }
-            else if (tipHit.hit && swingSpeed < pinEnterSwingSpeed && mouseMoveDistance > 2.0f)
+            else if (
+                allowPin &&
+                tipHit.hit &&
+                swingSpeed < pinEnterSwingSpeed &&
+                mouseMoveDistance > 2.0f)
             {
                 Vec2 attachPoint = TipOnSurface(tipHit, player.hammerTipRadius);
-                tryPin(attachPoint, mouseMoveDistance > 4.0f);
+                pinApplied = tryPin(attachPoint, mouseMoveDistance > 4.0f);
             }
-            else
+
+            if (!pinApplied)
             {
+                player.hammerPinned = false;
                 player.pos += player.vel * FIXED_DT;
             }
 
@@ -799,7 +813,7 @@ int main(int argc, char* argv[])
             {
                 player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
             }
-            else if (!pinnedThisStep)
+            else
             {
                 player.SolveArmIK(mouseWorld, mouseWorld);
             }

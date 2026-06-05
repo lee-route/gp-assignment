@@ -62,7 +62,7 @@ Player::Player()
 
 {
 
-    spawnPos = Vec2(-80.0f, 674.0f);
+    spawnPos = Vec2(-80.0f, 673.0f);
 
     pos = spawnPos;
 
