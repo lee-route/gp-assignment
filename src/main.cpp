@@ -245,29 +245,14 @@ static ContactInfo HammerTipVsWorld(const Circle& tip, const std::vector<RectF>&
     return best;
 }
 
-static ContactInfo BodyVsWorld(const Vec2& pos, float radius, const std::vector<RectF>& world)
+static Vec2 TipOnSurface(const ContactInfo& hit, float tipRadius)
 {
-    ContactInfo best;
-    float bestPen = -1.0f;
-
-    for (const RectF& rect : world)
-    {
-        ContactInfo hit = CircleVsRect(Circle{ pos, radius }, rect);
-
-        if (hit.hit && hit.penetration > bestPen)
-        {
-            best = hit;
-            bestPen = hit.penetration;
-        }
-    }
-
-    return best;
+    return hit.point + hit.normal * (tipRadius - 0.5f);
 }
 
-static bool CanPlaceBody(const Vec2& pos, float radius, const std::vector<RectF>& world, float maxPenetration)
+static ContactInfo FindHammerTipContact(const Vec2& tipPos, float tipRadius, const std::vector<RectF>& world)
 {
-    ContactInfo hit = BodyVsWorld(pos, radius, world);
-    return !hit.hit || hit.penetration <= maxPenetration;
+    return HammerTipVsWorld(Circle{ tipPos, tipRadius * 0.92f }, world);
 }
 
 static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
@@ -314,6 +299,45 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
             break;
         }
     }
+}
+
+static void ApplyPinnedLever(
+    Player& player,
+    const Vec2& attachPoint,
+    const Vec2& mouseWorld,
+    const Vec2& prevBodyPos,
+    float dt,
+    const std::vector<RectF>& world)
+{
+    player.hammerPinned = true;
+    player.pinnedAttachPoint = attachPoint;
+
+    player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
+    player.pos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
+    ResolveBodyWorld(player, world);
+
+    Vec2 constraintVel = (player.pos - prevBodyPos) / dt;
+
+    float angleDelta = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
+    Vec2 shoulder = player.ShoulderWorld();
+    Vec2 leverArm = shoulder - attachPoint;
+    float leverLength = Length(leverArm);
+
+    if (leverLength > 12.0f && std::abs(angleDelta) > 0.0001f)
+    {
+        Vec2 tangent = Normalize(Vec2(-leverArm.y, leverArm.x));
+        float sign = (angleDelta >= 0.0f) ? 1.0f : -1.0f;
+        Vec2 leverVel = tangent * sign * (std::abs(angleDelta) * leverLength / dt);
+        constraintVel = constraintVel * 0.55f + leverVel * 0.45f;
+    }
+
+    float constraintSpeed = Length(constraintVel);
+    if (constraintSpeed > 1800.0f)
+    {
+        constraintVel = Normalize(constraintVel) * 1800.0f;
+    }
+
+    player.vel = constraintVel;
 }
 
 static void BuildLevel(std::vector<RectF>& world)
@@ -537,11 +561,7 @@ int main(int argc, char* argv[])
     const float airDamping = 0.9992f;
     const float maxSpeed = 1800.0f;
 
-    const float pinEnterSwingSpeed = 200.0f;
-    const float pinExitSwingSpeed = 680.0f;
-    const float impactSwingSpeed = 780.0f;
-    const float impactImpulseScale = 0.55f;
-    const float maxImpactImpulse = 220.0f;
+    const float pinBreakSwingSpeed = 920.0f;
     constexpr int MAX_PHYSICS_STEPS = 1;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
@@ -620,118 +640,68 @@ int main(int argc, char* argv[])
             }
 
             Vec2 currentTip = player.HammerTip();
-            Circle tipCollider{ currentTip, player.hammerTipRadius };
-            ContactInfo tipHit = HammerTipVsWorld(tipCollider, world);
+            ContactInfo tipHit = FindHammerTipContact(currentTip, player.hammerTipRadius, world);
+            ContactInfo sweptHit = FindHammerTipContact(prevTip, player.hammerTipRadius, world);
+
+            if (!tipHit.hit && sweptHit.hit)
+            {
+                tipHit = sweptHit;
+                currentTip = prevTip;
+            }
 
             Vec2 rawTipVelocity = (currentTip - prevTip) / FIXED_DT;
             Vec2 relativeTipVelocity = rawTipVelocity - player.vel;
             float swingSpeed = Length(relativeTipVelocity);
 
-            auto applyPinnedPose = [&](const Vec2& attachPoint)
-            {
-                Vec2 candidatePos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
-                if (!CanPlaceBody(candidatePos, player.radius, world, 6.0f))
-                {
-                    return false;
-                }
-
-                player.hammerPinned = true;
-                player.pinnedAttachPoint = attachPoint;
-                player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
-                player.pos = candidatePos;
-                ResolveBodyWorld(player, world);
-
-                Vec2 constraintVel = (player.pos - prevBodyPos) / FIXED_DT;
-                float constraintSpeed = Length(constraintVel);
-                if (constraintSpeed > maxSpeed)
-                {
-                    constraintVel = Normalize(constraintVel) * maxSpeed;
-                }
-                player.vel = constraintVel;
-                return true;
-            };
-
             if (player.hammerPinned)
             {
-                ContactInfo pinHit = HammerTipVsWorld(
-                    Circle{ player.pinnedAttachPoint, player.hammerTipRadius * 0.85f },
+                ContactInfo pinHit = FindHammerTipContact(
+                    player.pinnedAttachPoint,
+                    player.hammerTipRadius,
                     world
                 );
 
-                if (pinHit.hit && swingSpeed < pinExitSwingSpeed)
+                if (pinHit.hit && swingSpeed < pinBreakSwingSpeed)
                 {
-                    Vec2 attachPoint = pinHit.point + pinHit.normal * (player.hammerTipRadius * 0.25f);
-                    Vec2 candidatePos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
-
-                    if (CanPlaceBody(candidatePos, player.radius, world, 6.0f))
-                    {
-                        player.pinnedAttachPoint = attachPoint;
-                        player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
-                        player.pos = candidatePos;
-                        ResolveBodyWorld(player, world);
-
-                        Vec2 constraintVel = (player.pos - prevBodyPos) / FIXED_DT;
-                        float constraintSpeed = Length(constraintVel);
-                        if (constraintSpeed > maxSpeed)
-                        {
-                            constraintVel = Normalize(constraintVel) * maxSpeed;
-                        }
-                        player.vel = constraintVel;
-                    }
-                    else
-                    {
-                        player.hammerPinned = false;
-                        player.pos += player.vel * FIXED_DT;
-                    }
+                    Vec2 attachPoint = TipOnSurface(pinHit, player.hammerTipRadius);
+                    ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
                 }
                 else
                 {
                     player.hammerPinned = false;
                     player.SolveArmIK(mouseWorld, mouseWorld);
                     player.pos += player.vel * FIXED_DT;
+                    ResolveBodyWorld(player, world);
                 }
+            }
+            else if (tipHit.hit && swingSpeed < pinBreakSwingSpeed)
+            {
+                Vec2 attachPoint = TipOnSurface(tipHit, player.hammerTipRadius);
+                ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
             }
             else
             {
-                if (tipHit.hit)
-                {
-                    Vec2 attachPoint = tipHit.point + tipHit.normal * (player.hammerTipRadius * 0.25f);
-                    float approachSpeed = Dot(relativeTipVelocity, tipHit.normal * -1.0f);
-
-                    if ((swingSpeed < pinEnterSwingSpeed || approachSpeed < 260.0f) &&
-                        tipHit.normal.y < -0.15f)
-                    {
-                        if (!applyPinnedPose(attachPoint))
-                        {
-                            player.pos += player.vel * FIXED_DT;
-                        }
-                    }
-                    else if (swingSpeed >= impactSwingSpeed && approachSpeed > 260.0f)
-                    {
-                        Vec2 impulseDir = Normalize(relativeTipVelocity * -1.0f);
-                        float impulse = Clamp((swingSpeed - impactSwingSpeed) * impactImpulseScale, 0.0f, maxImpactImpulse);
-                        player.vel += impulseDir * impulse;
-                        player.pos += player.vel * FIXED_DT;
-                    }
-                    else
-                    {
-                        player.pos += player.vel * FIXED_DT;
-                    }
-                }
-                else
-                {
-                    player.pos += player.vel * FIXED_DT;
-                }
-            }
-
-            if (!player.hammerPinned)
-            {
+                player.pos += player.vel * FIXED_DT;
                 ResolveBodyWorld(player, world);
             }
 
             if (player.hammerPinned)
             {
                 player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
+            }
+            else
+            {
+                player.SolveArmIK(mouseWorld, mouseWorld);
+                ContactInfo postMoveTipHit = FindHammerTipContact(
+                    player.HammerTip(),
+                    player.hammerTipRadius,
+                    world
+                );
+                if (postMoveTipHit.hit && swingSpeed < pinBreakSwingSpeed)
+                {
+                    Vec2 attachPoint = TipOnSurface(postMoveTipHit, player.hammerTipRadius);
+                    ApplyPinnedLever(player, attachPoint, mouseWorld, prevBodyPos, FIXED_DT, world);
+                }
             }
 
             float speed = Length(player.vel);
