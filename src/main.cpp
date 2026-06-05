@@ -272,16 +272,14 @@ static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
                     player.vel -= hit.normal * vn;
                 }
 
-                // Simple friction on mostly horizontal surfaces
                 if (std::abs(hit.normal.y) > 0.7f)
                 {
-                    player.vel.x *= 0.94f;
+                    player.vel.x *= 0.985f;
                 }
 
-                // Small damping on side wall contact
                 if (std::abs(hit.normal.x) > 0.7f)
                 {
-                    player.vel.y *= 0.98f;
+                    player.vel.y *= 0.99f;
                 }
             }
         }
@@ -297,40 +295,35 @@ static void BuildLevel(std::vector<RectF>& world)
 {
     world.clear();
 
-    // Starting floor
-    world.push_back({ -200.0f, 680.0f, 900.0f, 40.0f });
+    const float thickness = 34.0f;
+    const float stepWidth = 130.0f;
+    const float stepRise = 48.0f;
+    const float overlap = 28.0f;
 
-    // Left safety wall
-    world.push_back({ -240.0f, -1600.0f, 40.0f, 2320.0f });
+    // Left boundary wall
+    world.push_back({ -260.0f, -2200.0f, 44.0f, 3200.0f });
 
-    // Getting Over It style climbing route
-    world.push_back({ 200.0f, 610.0f, 160.0f, 24.0f });
-    world.push_back({ 430.0f, 540.0f, 120.0f, 24.0f });
-    world.push_back({ 620.0f, 455.0f, 170.0f, 24.0f });
-    world.push_back({ 880.0f, 365.0f, 110.0f, 24.0f });
+    // Continuous sloped climb: overlapping steps with no gaps
+    float x = -220.0f;
+    float topY = 700.0f;
 
-    // Small vertical obstacles
-    world.push_back({ 520.0f, 470.0f, 28.0f, 70.0f });
-    world.push_back({ 760.0f, 375.0f, 28.0f, 80.0f });
+    for (int i = 0; i < 28; ++i)
+    {
+        world.push_back({ x, topY, stepWidth + overlap, thickness });
+        x += stepWidth;
+        topY -= stepRise;
+    }
 
-    // Higher platforms
-    world.push_back({ 1040.0f, 270.0f, 180.0f, 24.0f });
-    world.push_back({ 940.0f, 130.0f, 110.0f, 24.0f });
-    world.push_back({ 720.0f, 10.0f, 150.0f, 24.0f });
-    world.push_back({ 500.0f, -120.0f, 120.0f, 24.0f });
-    world.push_back({ 300.0f, -260.0f, 170.0f, 24.0f });
+    // Upper ridge and goal plateau
+    world.push_back({ x - overlap * 0.5f, topY, 360.0f, thickness + 8.0f });
+    world.push_back({ x + 220.0f, topY - 90.0f, 240.0f, thickness });
 
-    // Narrow challenge
-    world.push_back({ 580.0f, -430.0f, 90.0f, 22.0f });
-    world.push_back({ 760.0f, -560.0f, 120.0f, 22.0f });
-    world.push_back({ 980.0f, -700.0f, 160.0f, 22.0f });
+    // Side ridges for hammer hooks
+    world.push_back({ x + 80.0f, topY - 260.0f, 36.0f, 220.0f });
+    world.push_back({ x + 360.0f, topY - 180.0f, 36.0f, 180.0f });
 
-    // Goal area
-    world.push_back({ 760.0f, -920.0f, 280.0f, 28.0f });
-
-    // Some side blocks for hammer contact
-    world.push_back({ 1120.0f, -880.0f, 35.0f, 180.0f });
-    world.push_back({ 660.0f, -900.0f, 35.0f, 140.0f });
+    // Deep ground far below (no death zone, just something to land on)
+    world.push_back({ -600.0f, 2400.0f, 3200.0f, 260.0f });
 }
 
 static void DrawArmSegment(SDL_Renderer* renderer, const Vec2& a, const Vec2& b, const Camera& camera)
@@ -434,74 +427,6 @@ static void DrawPickaxe(SDL_Renderer* renderer, const Player& player, const Came
     );
 }
 
-static void ApplyFallRecovery(Player& player, float dt)
-{
-    const float fallStartY = player.spawnPos.y + 180.0f;
-    if (player.pos.y <= fallStartY)
-    {
-        return;
-    }
-
-    float fallDepth = player.pos.y - fallStartY;
-    float depthRatio = Clamp(fallDepth / 520.0f, 0.0f, 1.0f);
-
-    Vec2 toSpawn = player.spawnPos - player.pos;
-    Vec2 pullDir = Normalize(toSpawn + Vec2(0.0f, -120.0f));
-
-    float pullStrength = 900.0f + depthRatio * 2400.0f;
-    float liftStrength = 1400.0f + depthRatio * 3200.0f;
-
-    player.vel += pullDir * pullStrength * dt;
-    player.vel.y -= liftStrength * dt;
-
-    player.vel.x *= 1.0f - 0.35f * depthRatio * dt;
-    player.vel = player.vel * (1.0f - 0.12f * depthRatio * dt);
-
-    if (player.pos.y > player.spawnPos.y + 760.0f)
-    {
-        player.pos = player.spawnPos + Vec2(0.0f, -40.0f);
-        player.vel = Vec2(0.0f, -420.0f);
-        player.hammerAttached = false;
-    }
-}
-
-static void ApplyAttachedLeverPhysics(Player& player, float dt)
-{
-    if (!player.hammerAttached)
-    {
-        return;
-    }
-
-    float angleDelta = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
-    if (std::abs(angleDelta) < 0.00001f)
-    {
-        return;
-    }
-
-    Vec2 shoulder = player.ShoulderWorld();
-    Vec2 attach = player.hammerAttachPoint;
-    Vec2 leverArm = shoulder - attach;
-    float leverLength = Length(leverArm);
-
-    if (leverLength < 8.0f)
-    {
-        return;
-    }
-
-    Vec2 tangent(-leverArm.y, leverArm.x);
-    tangent = Normalize(tangent);
-
-    float sign = (angleDelta >= 0.0f) ? 1.0f : -1.0f;
-    float leverStrength = leverLength * std::abs(angleDelta) * 5200.0f;
-    leverStrength = Clamp(leverStrength, 0.0f, 4200.0f);
-
-    player.vel += tangent * sign * leverStrength * dt;
-
-    Vec2 radial = Normalize(leverArm);
-    float radialPush = angleDelta * leverLength * 18.0f;
-    player.vel += radial * radialPush * dt;
-}
-
 int main(int argc, char* argv[])
 {
     (void)argc;
@@ -552,17 +477,13 @@ int main(int argc, char* argv[])
 
     Camera camera{ 0.0f, 0.0f };
 
-    const float gravity = 2100.0f;
-    const float airDamping = 0.9975f;
-    const float maxSpeed = 1350.0f;
+    const float gravity = 3200.0f;
+    const float airDamping = 0.9992f;
+    const float maxSpeed = 1800.0f;
 
-    // Main tuning values for hammer physics
-    const float minSwingSpeed = 28.0f;
-    const float attachMaxSwingSpeed = 520.0f;
-    const float baseHammerForce = 1200.0f;
-    const float swingForceMultiplier = 4.6f;
-    const float pressForceMultiplier = 4.2f;
-    const float maxHammerForce = 6800.0f;
+    const float impactSwingSpeed = 240.0f;
+    const float impactImpulseScale = 3.4f;
+    const float maxImpactImpulse = 1100.0f;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
@@ -623,31 +544,54 @@ int main(int argc, char* argv[])
         {
             player.prevHammerAngle = player.hammerAngle;
 
-            if (player.hammerAttached)
-            {
-                player.SolveArmFromAttachedTip(mouseWorld);
-            }
-            else
-            {
-                player.SolveArmIK(mouseWorld, mouseWorld);
-            }
+            Vec2 prevBodyPos = player.pos;
+            Vec2 prevTip = player.prevHammerTip;
 
-            float angleDiff = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
-            player.hammerAngularVelocity = angleDiff / FIXED_DT;
-
-            Vec2 currentTip = player.HammerTip();
-            Vec2 currentElbow = player.ElbowWorld();
-            Vec2 rawTipVelocity = (currentTip - player.prevHammerTip) / FIXED_DT;
-            Vec2 rawElbowVelocity = (currentElbow - player.prevElbow) / FIXED_DT;
-
-            Vec2 relativeTipVelocity = rawTipVelocity - player.vel;
-            Vec2 relativeElbowVelocity = rawElbowVelocity - player.vel;
-
-            // Gravity and damping
             player.vel.y += gravity * FIXED_DT;
             player.vel = player.vel * airDamping;
 
-            ApplyFallRecovery(player, FIXED_DT);
+            player.SolveArmIK(mouseWorld, mouseWorld);
+
+            Vec2 currentTip = player.HammerTip();
+            Circle tipCollider{ currentTip, player.hammerTipRadius };
+            ContactInfo tipHit = HammerTipVsWorld(tipCollider, world);
+
+            Vec2 rawTipVelocity = (currentTip - prevTip) / FIXED_DT;
+            Vec2 relativeTipVelocity = rawTipVelocity - player.vel;
+            float swingSpeed = Length(relativeTipVelocity);
+
+            bool hammerPinned = false;
+
+            if (tipHit.hit)
+            {
+                Vec2 attachPoint = tipHit.point + tipHit.normal * (player.hammerTipRadius * 0.15f);
+                float approachSpeed = Dot(relativeTipVelocity, tipHit.normal * -1.0f);
+
+                if (swingSpeed >= impactSwingSpeed && approachSpeed > 60.0f)
+                {
+                    Vec2 impulseDir = Normalize(relativeTipVelocity * -1.0f);
+                    float impulse = Clamp(swingSpeed * impactImpulseScale, 0.0f, maxImpactImpulse);
+                    player.vel += impulseDir * impulse;
+                }
+                else
+                {
+                    hammerPinned = true;
+
+                    player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
+                    Vec2 constrainedPos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
+                    player.pos = constrainedPos;
+
+                    Vec2 constraintVel = (player.pos - prevBodyPos) / FIXED_DT;
+                    player.vel = constraintVel;
+                }
+            }
+
+            if (!hammerPinned)
+            {
+                player.pos += player.vel * FIXED_DT;
+            }
+
+            ResolveBodyWorld(player, world);
 
             float speed = Length(player.vel);
             if (speed > maxSpeed)
@@ -655,56 +599,8 @@ int main(int argc, char* argv[])
                 player.vel = Normalize(player.vel) * maxSpeed;
             }
 
-            Circle tipCollider{ currentTip, player.hammerTipRadius };
-            ContactInfo tipHit = HammerTipVsWorld(tipCollider, world);
-
-            float swingSpeed = Length(relativeTipVelocity);
-            float elbowSwingSpeed = Length(relativeElbowVelocity);
-
-            if (player.hammerAttached)
-            {
-                if (!tipHit.hit || swingSpeed > attachMaxSwingSpeed)
-                {
-                    player.hammerAttached = false;
-                }
-                else
-                {
-                    player.hammerAttachPoint = tipHit.point;
-                    ApplyAttachedLeverPhysics(player, FIXED_DT);
-                }
-            }
-            else if (tipHit.hit)
-            {
-                Vec2 surfaceNormal = tipHit.normal;
-                float pressSpeed = std::max(0.0f, Dot(relativeTipVelocity, surfaceNormal * -1.0f));
-
-                bool canGrip =
-                    swingSpeed < attachMaxSwingSpeed &&
-                    pressSpeed > 18.0f &&
-                    elbowSwingSpeed < attachMaxSwingSpeed * 0.85f;
-
-                if (canGrip)
-                {
-                    player.hammerAttached = true;
-                    player.hammerAttachPoint = tipHit.point;
-                }
-                else if (swingSpeed > minSwingSpeed)
-                {
-                    Vec2 oppositeSwing = Normalize(relativeTipVelocity * -1.0f);
-                    Vec2 reactionDir = Normalize(oppositeSwing * 0.72f + surfaceNormal * 0.28f);
-
-                    float forceFromSwing = swingSpeed * swingForceMultiplier;
-                    float forceFromPress = pressSpeed * pressForceMultiplier;
-                    float finalForce = baseHammerForce + forceFromSwing + forceFromPress;
-                    finalForce = Clamp(finalForce, 0.0f, maxHammerForce);
-
-                    player.vel += reactionDir * finalForce * FIXED_DT;
-                    player.pos += surfaceNormal * (tipHit.penetration * 0.42f);
-                }
-            }
-
-            player.pos += player.vel * FIXED_DT;
-            ResolveBodyWorld(player, world);
+            float angleDiff = WrapAngleDiff(player.hammerAngle, player.prevHammerAngle);
+            player.hammerAngularVelocity = angleDiff / FIXED_DT;
 
             player.prevHammerTip = player.HammerTip();
             player.prevElbow = player.ElbowWorld();
@@ -736,11 +632,11 @@ int main(int argc, char* argv[])
             DrawWorldRect(renderer, rect, camera);
         }
 
-        // Draw goal marker
+        // Draw goal marker at climb summit
         SDL_SetRenderDrawColor(renderer, 255, 220, 80, 255);
         SDL_Rect goalRect{
-            ScreenX(850.0f, camera),
-            ScreenY(-970.0f, camera),
+            ScreenX(3380.0f, camera),
+            ScreenY(-670.0f, camera),
             100,
             45
         };

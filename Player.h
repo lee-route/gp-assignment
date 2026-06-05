@@ -11,7 +11,6 @@ public:
 
     float radius;
 
-    // Two-segment arm (shoulder -> elbow -> hammer tip)
     Vec2 shoulderOffset;
     float upperArmLength;
     float forearmLength;
@@ -27,10 +26,6 @@ public:
     Vec2 prevHammerTip;
     Vec2 prevElbow;
 
-    // Hammer tip pinned to terrain while gripping
-    bool hammerAttached;
-    Vec2 hammerAttachPoint;
-
 public:
     Player();
 
@@ -42,9 +37,7 @@ public:
     Vec2 HammerDir() const;
     Vec2 HammerTip() const;
 
-    // Reach toward mouse with a bendable elbow
     void SolveArmIK(const Vec2& targetWorld, const Vec2& poleHint);
-
-    // Tip locked on terrain; mouse rotates the handle around the contact point
-    void SolveArmFromAttachedTip(const Vec2& mouseWorld);
+    void SolveArmFromPinnedTip(const Vec2& attachPoint, const Vec2& mouseWorld);
+    Vec2 BodyPosFromPinnedTip(const Vec2& attachPoint, const Vec2& mouseWorld) const;
 };
