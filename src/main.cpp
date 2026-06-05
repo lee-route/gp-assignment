@@ -247,7 +247,7 @@ static ContactInfo HammerTipVsWorld(const Circle& tip, const std::vector<RectF>&
 
 static void ResolveBodyWorld(Player& player, const std::vector<RectF>& world)
 {
-    constexpr int ITERATIONS = 5;
+    constexpr int ITERATIONS = 8;
 
     for (int i = 0; i < ITERATIONS; ++i)
     {
@@ -300,12 +300,14 @@ static void BuildLevel(std::vector<RectF>& world)
     const float stepRise = 48.0f;
     const float overlap = 28.0f;
 
-    // Left boundary wall
-    world.push_back({ -260.0f, -2200.0f, 44.0f, 3200.0f });
+    // Left boundary wall (extends all the way down to the bottom floor)
+    world.push_back({ -260.0f, -2200.0f, 44.0f, 5000.0f });
 
-    // Continuous sloped climb: overlapping steps with no gaps
+    // Continuous sloped climb: overlapping steps with no gaps on top
     float x = -220.0f;
     float topY = 700.0f;
+    const float slopeStartX = x;
+    const float slopeStartY = topY;
 
     for (int i = 0; i < 28; ++i)
     {
@@ -313,6 +315,17 @@ static void BuildLevel(std::vector<RectF>& world)
         x += stepWidth;
         topY -= stepRise;
     }
+
+    const float slopeEndX = x + stepWidth;
+    const float slopeEndY = topY;
+
+    // Solid backing mass under the slope so nothing can fall through gaps
+    world.push_back({
+        slopeStartX - 40.0f,
+        slopeEndY - 20.0f,
+        (slopeEndX - slopeStartX) + 120.0f,
+        (slopeStartY + thickness) - (slopeEndY - 20.0f)
+    });
 
     // Upper ridge and goal plateau
     world.push_back({ x - overlap * 0.5f, topY, 360.0f, thickness + 8.0f });
@@ -322,8 +335,8 @@ static void BuildLevel(std::vector<RectF>& world)
     world.push_back({ x + 80.0f, topY - 260.0f, 36.0f, 220.0f });
     world.push_back({ x + 360.0f, topY - 180.0f, 36.0f, 180.0f });
 
-    // Deep ground far below (no death zone, just something to land on)
-    world.push_back({ -600.0f, 2400.0f, 3200.0f, 260.0f });
+    // Wide thick bottom floor
+    world.push_back({ -900.0f, 1900.0f, 5200.0f, 700.0f });
 }
 
 static void DrawArmSegment(SDL_Renderer* renderer, const Vec2& a, const Vec2& b, const Camera& camera)
@@ -336,14 +349,6 @@ static void DrawArmSegment(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
         static_cast<int>(aScreen.x),
         static_cast<int>(aScreen.y),
         static_cast<int>(bScreen.x),
-        static_cast<int>(bScreen.y)
-    );
-
-    SDL_RenderDrawLine(
-        renderer,
-        static_cast<int>(aScreen.x + 1),
-        static_cast<int>(aScreen.y),
-        static_cast<int>(bScreen.x + 1),
         static_cast<int>(bScreen.y)
     );
 }
@@ -481,9 +486,11 @@ int main(int argc, char* argv[])
     const float airDamping = 0.9992f;
     const float maxSpeed = 1800.0f;
 
-    const float impactSwingSpeed = 240.0f;
-    const float impactImpulseScale = 3.4f;
-    const float maxImpactImpulse = 1100.0f;
+    const float pinEnterSwingSpeed = 160.0f;
+    const float pinExitSwingSpeed = 520.0f;
+    const float impactSwingSpeed = 520.0f;
+    const float impactImpulseScale = 2.2f;
+    const float maxImpactImpulse = 750.0f;
 
     Uint64 previousCounter = SDL_GetPerformanceCounter();
     double accumulator = 0.0;
@@ -547,10 +554,12 @@ int main(int argc, char* argv[])
             Vec2 prevBodyPos = player.pos;
             Vec2 prevTip = player.prevHammerTip;
 
-            player.vel.y += gravity * FIXED_DT;
-            player.vel = player.vel * airDamping;
-
-            player.SolveArmIK(mouseWorld, mouseWorld);
+            if (!player.hammerPinned)
+            {
+                player.vel.y += gravity * FIXED_DT;
+                player.vel = player.vel * airDamping;
+                player.SolveArmIK(mouseWorld, mouseWorld);
+            }
 
             Vec2 currentTip = player.HammerTip();
             Circle tipCollider{ currentTip, player.hammerTipRadius };
@@ -560,38 +569,66 @@ int main(int argc, char* argv[])
             Vec2 relativeTipVelocity = rawTipVelocity - player.vel;
             float swingSpeed = Length(relativeTipVelocity);
 
-            bool hammerPinned = false;
-
-            if (tipHit.hit)
+            if (player.hammerPinned)
             {
-                Vec2 attachPoint = tipHit.point + tipHit.normal * (player.hammerTipRadius * 0.15f);
-                float approachSpeed = Dot(relativeTipVelocity, tipHit.normal * -1.0f);
+                ContactInfo pinHit = HammerTipVsWorld(
+                    Circle{ player.pinnedAttachPoint, player.hammerTipRadius },
+                    world
+                );
 
-                if (swingSpeed >= impactSwingSpeed && approachSpeed > 60.0f)
+                if (pinHit.hit && swingSpeed < pinExitSwingSpeed)
                 {
-                    Vec2 impulseDir = Normalize(relativeTipVelocity * -1.0f);
-                    float impulse = Clamp(swingSpeed * impactImpulseScale, 0.0f, maxImpactImpulse);
-                    player.vel += impulseDir * impulse;
+                    player.pinnedAttachPoint = pinHit.point + pinHit.normal * (player.hammerTipRadius * 0.2f);
+                    player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
+                    player.pos = player.BodyPosFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
+                    player.vel = (player.pos - prevBodyPos) / FIXED_DT;
                 }
                 else
                 {
-                    hammerPinned = true;
+                    player.hammerPinned = false;
+                    player.SolveArmIK(mouseWorld, mouseWorld);
+                    player.pos += player.vel * FIXED_DT;
+                }
+            }
+            else
+            {
+                if (tipHit.hit)
+                {
+                    Vec2 attachPoint = tipHit.point + tipHit.normal * (player.hammerTipRadius * 0.2f);
+                    float approachSpeed = Dot(relativeTipVelocity, tipHit.normal * -1.0f);
 
-                    player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
-                    Vec2 constrainedPos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
-                    player.pos = constrainedPos;
-
-                    Vec2 constraintVel = (player.pos - prevBodyPos) / FIXED_DT;
-                    player.vel = constraintVel;
+                    if (swingSpeed < pinEnterSwingSpeed || approachSpeed < 220.0f)
+                    {
+                        player.hammerPinned = true;
+                        player.pinnedAttachPoint = attachPoint;
+                        player.SolveArmFromPinnedTip(attachPoint, mouseWorld);
+                        player.pos = player.BodyPosFromPinnedTip(attachPoint, mouseWorld);
+                        player.vel = (player.pos - prevBodyPos) / FIXED_DT;
+                    }
+                    else if (swingSpeed >= impactSwingSpeed && approachSpeed > 180.0f)
+                    {
+                        Vec2 impulseDir = Normalize(relativeTipVelocity * -1.0f);
+                        float impulse = Clamp((swingSpeed - impactSwingSpeed) * impactImpulseScale, 0.0f, maxImpactImpulse);
+                        player.vel += impulseDir * impulse;
+                        player.pos += player.vel * FIXED_DT;
+                    }
+                    else
+                    {
+                        player.pos += player.vel * FIXED_DT;
+                    }
+                }
+                else
+                {
+                    player.pos += player.vel * FIXED_DT;
                 }
             }
 
-            if (!hammerPinned)
-            {
-                player.pos += player.vel * FIXED_DT;
-            }
-
             ResolveBodyWorld(player, world);
+
+            if (player.hammerPinned)
+            {
+                player.SolveArmFromPinnedTip(player.pinnedAttachPoint, mouseWorld);
+            }
 
             float speed = Length(player.vel);
             if (speed > maxSpeed)
@@ -642,13 +679,8 @@ int main(int argc, char* argv[])
         };
         SDL_RenderFillRect(renderer, &goalRect);
 
-        // Hammer contact check for rendering color
-        Vec2 hammerTip = player.HammerTip();
-        Circle tipCollider{ hammerTip, player.hammerTipRadius };
-        ContactInfo tipHit = HammerTipVsWorld(tipCollider, world);
-
         // Draw pickaxe / hammer
-        DrawPickaxe(renderer, player, camera, tipHit.hit);
+        DrawPickaxe(renderer, player, camera, player.hammerPinned);
 
         // Draw player body. This will later be replaced by Boo sprite.
         Vec2 playerScreen = WorldToScreen(player.pos, camera);

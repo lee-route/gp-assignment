@@ -26,6 +26,9 @@ public:
     Vec2 prevHammerTip;
     Vec2 prevElbow;
 
+    bool hammerPinned;
+    Vec2 pinnedAttachPoint;
+
 public:
     Player();
 
