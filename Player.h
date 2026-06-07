@@ -2,6 +2,13 @@
 
 #include "Vec2.h"
 
+enum class WeaponType
+{
+    Pistol,
+    MachineGun,
+    Shotgun
+};
+
 class Player
 {
 public:
@@ -10,23 +17,29 @@ public:
     Vec2 spawnPos;
 
     float radius;
+    float speed;
 
-    float hammerAngle;
-    float targetHammerAngle;
-    float prevHammerAngle;
-    float hammerAngularVelocity;
+    int hp;
+    int maxHp;
 
-    float hammerLength;
-    float hammerTipRadius;
+    WeaponType weapon;
 
-    Vec2 prevHammerTip;
-    Vec2 currentHammerTip;
+    bool hasMachineGun;
+    bool hasShotgun;
+
+    float shootCooldown;
+    float shootTimer;
+
+    int medkitCount;
+
+    float fireRateBuffTimer;
+    float ricochetBuffTimer;
 
 public:
     Player();
 
     void Reset();
+    void Update(float dt);
 
-    Vec2 HammerDir() const;
-    Vec2 HammerTip() const;
+    float GetCurrentShootCooldown() const;
 };

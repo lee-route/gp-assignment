@@ -1,25 +1,29 @@
 #include "../Player.h"
 
-#include <cmath>
-
 Player::Player()
 {
-    spawnPos = Vec2(120.0f, 640.0f);
+    spawnPos = Vec2(420.0f, 420.0f);
     pos = spawnPos;
     vel = Vec2(0.0f, 0.0f);
 
-    radius = 28.0f;
+    radius = 18.0f;
+    speed = 260.0f;
 
-    hammerAngle = -0.35f;
-    targetHammerAngle = hammerAngle;
-    prevHammerAngle = hammerAngle;
-    hammerAngularVelocity = 0.0f;
+    maxHp = 100;
+    hp = maxHp;
 
-    hammerLength = 145.0f;
-    hammerTipRadius = 6.0f;
+    weapon = WeaponType::Pistol;
 
-    prevHammerTip = HammerTip();
-    currentHammerTip = HammerTip();
+    hasMachineGun = false;
+    hasShotgun = false;
+
+    shootCooldown = 0.16f;
+    shootTimer = 0.0f;
+
+    medkitCount = 0;
+
+    fireRateBuffTimer = 0.0f;
+    ricochetBuffTimer = 0.0f;
 }
 
 void Player::Reset()
@@ -27,21 +31,84 @@ void Player::Reset()
     pos = spawnPos;
     vel = Vec2(0.0f, 0.0f);
 
-    hammerAngle = -0.35f;
-    targetHammerAngle = hammerAngle;
-    prevHammerAngle = hammerAngle;
-    hammerAngularVelocity = 0.0f;
+    hp = maxHp;
 
-    prevHammerTip = HammerTip();
-    currentHammerTip = HammerTip();
+    weapon = WeaponType::Pistol;
+
+    hasMachineGun = false;
+    hasShotgun = false;
+
+    shootCooldown = 0.16f;
+    shootTimer = 0.0f;
+
+    medkitCount = 0;
+
+    fireRateBuffTimer = 0.0f;
+    ricochetBuffTimer = 0.0f;
 }
 
-Vec2 Player::HammerDir() const
+void Player::Update(float dt)
 {
-    return Vec2(std::cos(hammerAngle), std::sin(hammerAngle));
+    if (shootTimer > 0.0f)
+    {
+        shootTimer -= dt;
+
+        if (shootTimer < 0.0f)
+        {
+            shootTimer = 0.0f;
+        }
+    }
+
+    if (fireRateBuffTimer > 0.0f)
+    {
+        fireRateBuffTimer -= dt;
+
+        if (fireRateBuffTimer < 0.0f)
+        {
+            fireRateBuffTimer = 0.0f;
+        }
+    }
+
+    if (ricochetBuffTimer > 0.0f)
+    {
+        ricochetBuffTimer -= dt;
+
+        if (ricochetBuffTimer < 0.0f)
+        {
+            ricochetBuffTimer = 0.0f;
+        }
+    }
+
+    if (hp <= 45 && medkitCount > 0)
+    {
+        hp += 35;
+
+        if (hp > maxHp)
+        {
+            hp = maxHp;
+        }
+
+        medkitCount -= 1;
+    }
 }
 
-Vec2 Player::HammerTip() const
+float Player::GetCurrentShootCooldown() const
 {
-    return pos + HammerDir() * hammerLength;
+    float cooldown = 0.16f;
+
+    if (weapon == WeaponType::MachineGun)
+    {
+        cooldown = 0.07f;
+    }
+    else if (weapon == WeaponType::Shotgun)
+    {
+        cooldown = 0.48f;
+    }
+
+    if (fireRateBuffTimer > 0.0f)
+    {
+        cooldown *= 0.55f;
+    }
+
+    return cooldown;
 }

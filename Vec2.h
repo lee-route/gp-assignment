@@ -91,6 +91,11 @@ inline Vec2 Normalize(const Vec2& v)
     return v / len;
 }
 
+inline float Distance(const Vec2& a, const Vec2& b)
+{
+    return Length(a - b);
+}
+
 inline float Clamp(float value, float minValue, float maxValue)
 {
     if (value < minValue)
